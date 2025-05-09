@@ -5,9 +5,13 @@ import json
 from datetime import date
 import pandas as pd
 from time import sleep
-import tiktoken
 from openai import OpenAI
 from dotenv import load_dotenv
+import streamlit as st
+import tempfile
+import os
+from PIL import Image
+import base64
 
 load_dotenv()
 api_key = os.getenv('OPENAI_API_KEY')
@@ -433,13 +437,6 @@ class DataExtractor:
 
             })
         return self.replacements
-
-
-import streamlit as st
-import tempfile
-import os
-from PIL import Image
-import base64
 
 st.markdown("""
     <style>
