@@ -77,6 +77,3 @@ Contributions, suggestions, or pull requests are welcome!
 
 ---
 
-## 📄 License
-
-MIT License. See `LICENSE` file for more info.
