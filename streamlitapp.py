@@ -12,6 +12,9 @@ import tempfile
 import os
 from PIL import Image
 import base64
+import matplotlib.pyplot as plt
+from datetime import datetime
+from pptx.util import Inches
 
 load_dotenv()
 api_key = os.getenv('OPENAI_API_KEY')
@@ -59,6 +62,19 @@ class PowerPointProcessor:
                                             found_placeholders.add(placeholder)
                                             run.text = run.text.replace(placeholder, str(replacement))
 
+        try:
+            chart_slide = self.prs.slides[8]  # Slide 10
+            for shape in chart_slide.shapes:
+                if shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
+                    chart_slide.shapes._spTree.remove(shape._element)
+            chart_slide.shapes.add_picture("impressions_chart.png", Inches(0.7), Inches(2.9), height=Inches(3.2))
+            chart_slide.shapes.add_picture("clicks_chart.png", Inches(8.7), Inches(2.9), height=Inches(3.2))
+
+        except IndexError:
+            print("⚠️ Slide 10 (index 9) not found – skipping chart replacement.")
+        except FileNotFoundError as e:
+            print(f"⚠️ Image file not found: {e.filename}")    
+
         self.prs.save(output_pptx)
 
         # Debugging output
@@ -104,6 +120,32 @@ class DataExtractor:
                     return "GPT4 error: %s" % oops
                 print('Error communicating with OpenAI:', oops)
                 sleep(1)
+
+    def plot_figures(self, est, actual, file_name):
+        categories = ['Estimated', 'Actual']
+        values = [est, actual]
+        colors = ['#6FC0C3', '#4B88F1']
+
+        # Create bar chart
+        fig, ax = plt.subplots(figsize=(3.0, 2.5))
+        bars = ax.bar(categories, values, color=colors)
+
+        # Add white bold labels on bars
+        for bar in bars: 
+            yval = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width() / 2, yval - (yval * 0.05), f'{yval:,}', ha='center',va='top', color='white', fontweight='bold', fontsize=7)
+
+        # Format y-axis with commas
+        ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+        # Add horizontal gridlines
+        ax.yaxis.grid(True, linestyle='--', linewidth=0.5)
+        ax.set_axisbelow(True)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.xticks(fontsize=7)
+        plt.yticks(fontsize=7)
+        plt.tight_layout()
+        plt.savefig(file_name, dpi=300)
 
     def extract_values(self):
         meta = pd.read_excel(self.meta_file)
@@ -251,9 +293,15 @@ class DataExtractor:
 
         # ========== Media Plan Estimates =============
         if media_plan is not None:
-            media_plan = media_plan[['Platform', 'Estimated Impressions', 'Estimated link clicks', 'Estimated Frequency', 'Estimated Reach', 'Gross spend by channel / platform', 'Estimated CTR', 'Net CPM']]
+            media_plan = media_plan[['Platform', 'Estimated Impressions', 'Estimated link clicks', 'Estimated Frequency', 'Estimated Reach', 'Gross spend by channel / platform', 'Estimated CTR', 'Net CPM', 'Flight duration']]
             media_plan['Platform'] = media_plan['Platform'].fillna(method='ffill')
+            media_plan['Flight duration'] = media_plan['Flight duration'].fillna(method='ffill')
             media_plan_clean = media_plan.dropna()
+            date_text = str(media_plan_clean['Flight duration'][0])
+            date_ranges = re.findall(r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})', date_text)
+            parsed_ranges = [(datetime.strptime(start, "%d/%m/%Y"), datetime.strptime(end, "%d/%m/%Y")) for start, end in date_ranges]
+            latest_range = max(parsed_ranges, key=lambda r: r[1])
+            date_range = f"{latest_range[0].strftime('%d/%m/%Y')} - {latest_range[1].strftime('%d/%m/%Y')}"
             estimated_impression = media_plan_clean.groupby('Platform')['Estimated Impressions'].sum()
             estimated_clicks = media_plan_clean.groupby('Platform')['Estimated link clicks'].sum()
             estimated_reach = media_plan_clean.groupby('Platform')['Estimated Reach'].sum()
@@ -262,7 +310,6 @@ class DataExtractor:
             est_click_sum = estimated_clicks.sum().astype(int)
             est_reach_sum = float(estimated_reach.sum())
             est_gross_sum = float(estimated_gross_spend.sum())
-            print(media_plan_clean.head())
             est_ctr_meta = media_plan_clean[media_plan_clean['Platform'] == 'Meta (Facebook & Instagram)']['Estimated CTR'].iloc[0] * 100
             est_cpm_meta = media_plan_clean[media_plan_clean['Platform'] == 'Meta (Facebook & Instagram)']['Net CPM'].iloc[0]
             est_imp_meta = int(estimated_impression['Meta (Facebook & Instagram)'])
@@ -287,6 +334,7 @@ class DataExtractor:
 
         else:
             #estimated_impression = estimated_clicks = estimated_reach = estimated_gross_spend = 0
+            date_range = Date_
             est_imp_sum = est_click_sum = est_reach_sum = est_gross_sum = 0
             est_ctr_sum = est_cpm_sum = perc_imp = perc_clicks = 0
             est_imp_meta = est_clicks_meta = est_reach_meta = est_gross_meta = 0
@@ -304,11 +352,16 @@ class DataExtractor:
         prompt = prompt.replace('<<meta_input>>', meta_input)
         prompt = prompt.replace('<<pin_input>>', pin_input)
         prompt = prompt.replace('<<estimate_and_actual>>', actual_and_estimate_values)
-        prompt = prompt.replace('<<channel_comparison>>', channel_kpi_comparison_json)
+        prompt = prompt.replace('<<chaThank younnel_comparison>>', channel_kpi_comparison_json)
         prompt = prompt.replace('<<online_and_instore>>', online_offline_json)
         prompt = prompt.replace('<<audience_data>>', audience_json)
         campaign_commentary = self.gpt4_completion(prompt)                                                                              #Run gpt function and save the output
         commentary_json = json.loads(campaign_commentary)  
+
+        #=============================================================Call graph plotting function  ==================================================================================
+
+        self.plot_figures(total_impressions, est_imp_sum, "impressions_chart.png")
+        self.plot_figures(total_clicks, est_click_sum, "clicks_chart.png")
 
         #=============================================================replacement dictionary==================================================================================
         self.replacements = {
@@ -316,6 +369,7 @@ class DataExtractor:
             "{Campaign Name}": Campaign_Name,
             "{Date_}": Date_,
             "{Campaign Dates}": Date_,
+            "{Flight_dates}": date_range,
             "{Channels}": channel_list_str,  # Dynamically formatted channel list
             "{Gross_Spend}": f"{int(total_gross_spend):,}",  # Formatted with commas and two decimal places
             "{Impressions}": f"{total_impressions:,}",  # Formatted with commas
