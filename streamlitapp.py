@@ -167,7 +167,7 @@ class DataExtractor:
         else:
             channel_list_str = "No data available"
 
-        gross_spend_meta = float(meta['Gross_Spend - 43,998.74'].sum())
+        gross_spend_meta = float(meta['Gross_Spend'].sum())
         net_spend_meta = gross_spend_meta * 0.7
         impressions_meta = int(meta['Impressions'].sum())
         clicks_meta = int(meta['Clicks'].sum())
@@ -184,16 +184,16 @@ class DataExtractor:
         brand_instore_revenue_meta = float(meta['Brand_Instore_Revenue'].sum())
         FSKU_online_revenue_meta = float(meta['SKU_Online_Revenue'].sum())
         FSKU_instore_revenue_meta = float(meta['SKU_Instore_Revenue'].sum())
-        gross_spend_per_audience_meta = meta.groupby('Ad_Set_Name')[['Gross_Spend - 43,998.74']].sum().reset_index()
-        net_spend_per_audience_meta = gross_spend_per_audience_meta['Gross_Spend - 43,998.74'] * 0.7
+        gross_spend_per_audience_meta = meta.groupby('Ad_Set_Name')[['Gross_Spend']].sum().reset_index()
+        net_spend_per_audience_meta = gross_spend_per_audience_meta['Gross_Spend'] * 0.7
         impressions_per_audience_meta = meta.groupby('Ad_Set_Name')[['Impressions']].sum().reset_index()
         reach_per_audience_meta = meta.groupby('Ad_Set_Name')[['Ad_Set_Reach']].sum().reset_index()
         clicks_per_audience_meta = meta.groupby('Ad_Set_Name')[['Clicks']].sum().reset_index()
         CTR_per_audience_meta = clicks_per_audience_meta['Clicks'] / impressions_per_audience_meta['Impressions'] * 100
         net_CPM_per_audience_meta = net_spend_per_audience_meta / impressions_per_audience_meta['Impressions'] * 1000
         brand_revenue_per_audience_meta = meta.groupby('Ad_Set_Name')[['Brand_Revenue']].sum().reset_index()
-        gross_spend_series = gross_spend_per_audience_meta['Gross_Spend - 43,998.74']
-        brand_ROI_per_audience_meta = brand_revenue_per_audience_meta['Brand_Revenue'] / gross_spend_per_audience_meta['Gross_Spend - 43,998.74']
+        gross_spend_series = gross_spend_per_audience_meta['Gross_Spend']
+        brand_ROI_per_audience_meta = brand_revenue_per_audience_meta['Brand_Revenue'] / gross_spend_per_audience_meta['Gross_Spend']
         meta_input = meta.to_json(orient='records', indent=4)
 
         combined_meta_df = pd.DataFrame({
@@ -550,8 +550,18 @@ st.markdown(
 
 
 
-if "reset" not in st.session_state:
-    st.session_state.reset = False
+# Initialize session state variables if they don't exist
+if "reset_state" not in st.session_state:
+    st.session_state.reset_state = False
+
+if "meta_file" not in st.session_state:
+    st.session_state.meta_file = None
+
+if "pinterest_file" not in st.session_state:
+    st.session_state.pinterest_file = None
+
+if "media_plan_file" not in st.session_state:
+    st.session_state.media_plan_file = None
 
 st.title("📊 Post-Campaign Report Generator")
 
@@ -559,45 +569,63 @@ st.markdown("""
 Upload your campaign files below. At minimum, a Meta Excel/csv file is required.
 """)
 
-if not st.session_state.reset:
-    meta_file = st.file_uploader("Meta Excel File (Required)", type=["xlsx"], key="meta_file")
-    pinterest_file = st.file_uploader("Pinterest CSV File (Optional)", type=["csv"], key="pinterest_file")
-    media_plan_file = st.file_uploader("Media Plan Excel File (Optional)", type=["xlsx"], key="media_plan_file")
+# Handle file uploads with unique keys that change when reset is pressed
+upload_key_suffix = f"_{hash(st.session_state.reset_state)}"
 
-else:
-    # Reset state and rerun
-    st.session_state.reset = False
-    st.rerun()
+meta_file = st.file_uploader("Meta Excel File (Required)", 
+                            type=["xlsx"], 
+                            key=f"meta_uploader{upload_key_suffix}")
+
+pinterest_file = st.file_uploader("Pinterest CSV File (Optional)", 
+                                 type=["csv"], 
+                                 key=f"pinterest_uploader{upload_key_suffix}")
+
+media_plan_file = st.file_uploader("Media Plan Excel File (Optional)", 
+                                  type=["xlsx"], 
+                                  key=f"media_plan_uploader{upload_key_suffix}")
+
+# Store uploaded files in session state
+if meta_file is not None:
+    st.session_state.meta_file = meta_file
+
+if pinterest_file is not None:
+    st.session_state.pinterest_file = pinterest_file
+
+if media_plan_file is not None:
+    st.session_state.media_plan_file = media_plan_file
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     if st.button("Generate PowerPoint Report"):
-        if not meta_file:
+        if not st.session_state.meta_file:
             st.error("Please upload at least Meta file, Prompt file, and PowerPoint template.")
         else:
             with tempfile.TemporaryDirectory() as tmpdir:
                 # Save uploaded files temporarily
-                meta_path = os.path.join(tmpdir, meta_file.name)
+                meta_path = os.path.join(tmpdir, st.session_state.meta_file.name)
+                # Reset file position to beginning before reading
+                st.session_state.meta_file.seek(0)
                 with open(meta_path, "wb") as f:
-                    f.write(meta_file.read())
+                    f.write(st.session_state.meta_file.read())
 
                 pin_path = None
-                if pinterest_file:
-                    pin_path = os.path.join(tmpdir, pinterest_file.name)
+                if st.session_state.pinterest_file:
+                    pin_path = os.path.join(tmpdir, st.session_state.pinterest_file.name)
+                    st.session_state.pinterest_file.seek(0)
                     with open(pin_path, "wb") as f:
-                        f.write(pinterest_file.read())
+                        f.write(st.session_state.pinterest_file.read())
 
                 media_path = None
-                if media_plan_file:
-                    media_path = os.path.join(tmpdir, media_plan_file.name)
+                if st.session_state.media_plan_file:
+                    media_path = os.path.join(tmpdir, st.session_state.media_plan_file.name)
+                    st.session_state.media_plan_file.seek(0)
                     with open(media_path, "wb") as f:
-                        f.write(media_plan_file.read())
+                        f.write(st.session_state.media_plan_file.read())
 
                 # Provide internal file paths (ensure these files exist in your project directory)
                 prompt = "prompt.txt"
                 ppt_template = "automation_template_v3.pptx"
-
 
                 prompt_path = os.path.join(tmpdir, "prompt.txt")
                 with open(prompt, "rb") as src, open(prompt_path, "wb") as dst:
@@ -627,8 +655,10 @@ with col1:
                     )
 with col4:
     if st.button("Reset Uploads"):
-        for key in ["meta_file", "pinterest_file", "media_plan_file"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.session_state.reset = True
+        # Toggle the reset state to force file uploader widgets to create new instances
+        st.session_state.reset_state = not st.session_state.reset_state
+        # Clear stored files
+        st.session_state.meta_file = None
+        st.session_state.pinterest_file = None
+        st.session_state.media_plan_file = None
         st.rerun()
