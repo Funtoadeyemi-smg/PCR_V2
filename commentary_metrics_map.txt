@@ -1,0 +1,87 @@
+Commentary Placeholder → Supporting Metrics
+=========================================
+
+1. `{overall_campaign_performance_commentary}`
+   - `overall.gross_spend`, `overall.net_spend`
+   - `overall.brand_revenue`, `overall.brand_roas`, `overall.brand_roi`
+   - `overall.impressions`, `overall.clicks`, `overall.ctr`, `overall.net_cpm`
+
+2. `{overall_engagement_performance_commentary}`
+   - `overall.clicks`, `overall.ctr`
+   - `overall.net_cpm`, `overall.frequency`
+
+3. `{overall_sales_revenue_ROI_performance_commentary}`
+   - `overall.brand_revenue`, `overall.brand_roas`, `overall.brand_roi`
+   - `overall.fsku_revenue`, `overall.fsku_roas`, `overall.fsku_roi`
+
+4. `{overall_reach_performance_commentary}`
+   - `overall.reach`, `overall.impressions`, `overall.frequency`
+
+5. `{estimated_versus_actual_performance_commentary}`
+   - `overall` metrics vs `estimates.<channel>` metrics (impressions, reach, clicks, frequency, spend, CTR, Net CPM)
+
+6. `{channel_performance_commentary}`
+   - `channels.<channel>.summary` (gross/net spend, impressions, reach, clicks, CTR, Net CPM, frequency, revenue, ROAS, ROI)
+   - `channels_present` for identifying missing channels
+
+7. `{brand_and_fsku_roas_performance_wrt_overall_traffic_performance_commentary}`
+   - `overall.brand_roas`, `overall.brand_roi`, `overall.fsku_roas`, `overall.fsku_roi`
+   - Traffic metrics: `overall.ctr`, `overall.net_cpm`, `overall.reach`, `overall.impressions`
+
+8. `{percentage_of_instore_online_sales_commentary}`
+   - `online_instore.online_revenue`, `online_instore.instore_revenue`, `online_instore.total_revenue`
+   - `online_instore.online_share_percent`, `online_instore.instore_share_percent`
+   - `online_instore.online_aov`, `online_instore.instore_aov`
+
+9. `{meta_two_audiences_with_strongest_roas_commentary}`
+   - `channels.meta.top_two_audiences` (ROAS, spend, impressions, clicks, reach)
+
+10. `{meta_intuitive_commentary_about_audience_performance_commentary}`
+    - `channels.meta.audiences` (ROAS, CTR, frequency, spend patterns)
+
+11. `{meta_audience_performance_commentary}`
+    - `channels.meta.audiences` (detailed metrics for leading or lagging audience)
+
+12. `{meta_ad_with_strongest_roas_and_impressions_commentary}`
+    - `channels.meta.best_creative` (name, impressions, clicks, CTR, spend, revenue, ROAS)
+
+13. `{meta_ad_with_weakest_roas_and_impressions_commentary}`
+    - `channels.meta.worst_creative` (name, impressions, clicks, CTR, spend, revenue, ROAS)
+
+14. `{tik_two_audiences_with_strongest_roas_commentary}`
+    - `channels.tik.top_two_audiences` (spend, impressions, clicks, CTR, frequency)
+
+15. `{tik_intuitive_commentary_about_audience_performance_commentary}`
+    - `channels.tik.audiences` (engagement and efficiency trends)
+
+16. `{tik_audience_performance_commentary}`
+    - `channels.tik.audiences` (highlight notable TikTok audience metrics)
+
+17. `{tik_ad_with_strongest_roas_and_impressions_commentary}`
+    - `channels.tik.best_creative` (name, impressions, CTR, clicks, spend)
+
+18. `{tik_ad_with_weakest_roas_and_impressions_commentary}`
+    - `channels.tik.worst_creative` (name, impressions, CTR, clicks, spend)
+
+19. `{pin_two_audiences_with_strongest_roas_commentary}`
+    - `channels.pin.top_two_audiences` (revenue, ROAS, spend, CTR, reach)
+
+20. `{pin_intuitive_commentary_about_audience_performance_commentary}`
+    - `channels.pin.audiences` (audience mix and efficiency signals)
+
+21. `{pin_audience_performance_commentary}`
+    - `channels.pin.audiences` (key Pinterest audience metrics)
+
+22. `{pin_ad_with_strongest_roas_and_impressions_commentary}`
+    - `channels.pin.best_creative` (name, impressions, clicks, CTR, spend, revenue, ROAS)
+
+23. `{pin_ad_with_weakest_roas_and_impressions_commentary}`
+    - `channels.pin.worst_creative` (name, impressions, clicks, CTR, spend, revenue, ROAS)
+
+24. `{how_objective_2_was_met_commentary}`
+    - `objectives.objective_2`
+    - Supporting evidence: `overall` metrics, `channels.<channel>.summary`, `estimates` comparisons relevant to the objective
+
+25. `{how_objective_1_was_met_commentary}`
+    - `objectives.objective_1`
+    - Supporting evidence: `overall` metrics, `channels.<channel>.summary`, `estimates` comparisons relevant to the objective

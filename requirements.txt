@@ -4,3 +4,5 @@ pandas
 python-pptx
 python-dotenv
 tiktoken
+pydantic
+matplotlib
