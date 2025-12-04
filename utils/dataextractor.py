@@ -437,7 +437,7 @@ class ConsolidatedDataExtractor:
         required_columns = {col.lower() for col in REQUIRED_COLUMNS["media_plan"]}
 
         try:
-            preview = pd.read_excel(path, header=None, nrows=20)
+            preview = pd.read_excel(path, header=None, nrows=60)
         except Exception:
             # Fall back to the default reader; validation will surface any issues.
             df = pd.read_excel(path)
@@ -445,7 +445,7 @@ class ConsolidatedDataExtractor:
             header_row = 0
             for idx, row in preview.iterrows():
                 normalized = {
-                    str(value).strip().lower()
+                    re.sub(r"\s+", " ", str(value).strip().lower())
                     for value in row.tolist()
                     if pd.notna(value) and str(value).strip()
                 }
