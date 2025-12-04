@@ -1030,23 +1030,44 @@ class ConsolidatedDataExtractor:
             if not key:
                 continue
 
-            est_gross = float(group["Gross spend by channel / platform"].fillna(0).sum())
-            est_impressions = float(group["Estimated Impressions"].fillna(0).sum())
-            est_clicks = float(group["Estimated link clicks"].fillna(0).sum())
-            est_reach = float(group["Estimated Reach"].fillna(0).sum())
-            est_ctr_series = group["Estimated CTR"].dropna()
-            raw_ctr = coerce_float(est_ctr_series.iloc[0]) if not est_ctr_series.empty else 0.0
-            est_ctr = raw_ctr * 100 if raw_ctr and raw_ctr <= 1 else raw_ctr
+            selector_cols = [
+                "Format & placement",
+                "Targeting segment",
+                "Audience Data Source",
+                "Channel",
+            ]
+            total_candidate = group.copy()
+            for col in selector_cols:
+                if col in total_candidate.columns:
+                    total_candidate = total_candidate[total_candidate[col].isna()]
+            total_candidate = total_candidate[total_candidate["Gross spend by channel / platform"].notna()]
 
-            est_cpm_series = group["Net CPM"].dropna()
-            est_cpm = coerce_float(est_cpm_series.iloc[0]) if not est_cpm_series.empty else 0.0
-
-            est_freq_series = group["Estimated Frequency"].dropna()
-            if not est_freq_series.empty:
-                est_freq = coerce_float(est_freq_series.iloc[0])
+            if not total_candidate.empty:
+                total_row = total_candidate.iloc[-1]
+                est_gross = coerce_float(total_row.get("Gross spend by channel / platform"))
+                est_impressions = coerce_float(total_row.get("Estimated Impressions"))
+                est_clicks = coerce_float(total_row.get("Estimated link clicks"))
+                est_reach = coerce_float(total_row.get("Estimated Reach"))
+                raw_ctr = coerce_float(total_row.get("Estimated CTR"))
+                est_cpm = coerce_float(total_row.get("Net CPM"))
+                raw_freq = total_row.get("Estimated Frequency")
+                est_freq = coerce_float(raw_freq) if raw_freq is not None else safe_div(est_impressions, est_reach)
             else:
-                est_freq = safe_div(est_impressions, est_reach)
+                est_gross = float(group["Gross spend by channel / platform"].fillna(0).sum())
+                est_impressions = float(group["Estimated Impressions"].fillna(0).sum())
+                est_clicks = float(group["Estimated link clicks"].fillna(0).sum())
+                est_reach = float(group["Estimated Reach"].fillna(0).sum())
+                est_ctr_series = group["Estimated CTR"].dropna()
+                raw_ctr = coerce_float(est_ctr_series.iloc[0]) if not est_ctr_series.empty else 0.0
+                est_cpm_series = group["Net CPM"].dropna()
+                est_cpm = coerce_float(est_cpm_series.iloc[0]) if not est_cpm_series.empty else 0.0
+                est_freq_series = group["Estimated Frequency"].dropna()
+                if not est_freq_series.empty:
+                    est_freq = coerce_float(est_freq_series.iloc[0])
+                else:
+                    est_freq = safe_div(est_impressions, est_reach)
 
+            est_ctr = raw_ctr * 100 if raw_ctr and raw_ctr <= 1 else raw_ctr
             estimates[key] = {
                 "gross_spend": est_gross,
                 "impressions": est_impressions,
