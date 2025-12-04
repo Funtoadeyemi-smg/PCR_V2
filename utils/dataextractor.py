@@ -336,7 +336,7 @@ class ConsolidatedDataExtractor:
 
         media_plan_df = None
         if self.media_plan_file:
-            media_plan_df = pd.read_excel(self.media_plan_file, skiprows=7, skipfooter=3)
+            media_plan_df = self._load_media_plan(self.media_plan_file)
             validate_dataframe("media_plan", media_plan_df)
 
         meta_summary, meta_audiences, meta_ads = self._build_meta_summary(meta_df, meta_conversion_frames)
@@ -431,6 +431,31 @@ class ConsolidatedDataExtractor:
         if suffix in (".csv", ".txt"):
             return pd.read_csv(path)
         return pd.read_excel(path)
+
+    def _load_media_plan(self, path: str) -> pd.DataFrame:
+        required_columns = {col.lower() for col in REQUIRED_COLUMNS["media_plan"]}
+
+        try:
+            preview = pd.read_excel(path, header=None, nrows=20)
+        except Exception:
+            # Fall back to the default reader; validation will surface any issues.
+            df = pd.read_excel(path)
+        else:
+            header_row = 0
+            for idx, row in preview.iterrows():
+                normalized = {
+                    str(value).strip().lower()
+                    for value in row.tolist()
+                    if pd.notna(value) and str(value).strip()
+                }
+                if required_columns.issubset(normalized):
+                    header_row = idx
+                    break
+            df = pd.read_excel(path, header=header_row)
+
+        df.columns = [str(col).strip() for col in df.columns]
+        df = df.dropna(how="all")
+        return df
 
     def _load_meta_frames(self, path: str) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
         suffix = Path(path).suffix.lower()
