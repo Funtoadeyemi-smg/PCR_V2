@@ -6,3 +6,4 @@ python-dotenv
 tiktoken
 pydantic
 matplotlib
+openpyxl>=3.1
