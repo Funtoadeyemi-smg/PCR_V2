@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass, asdict
 from datetime import date, datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+sys.modules.setdefault("utils.dataextractor", sys.modules[__name__])
 
 PRECISION = 2
 
