@@ -4,7 +4,6 @@ import json
 import math
 import os
 import sys
-import types
 from dataclasses import dataclass, asdict
 from datetime import date, datetime
 from pathlib import Path
@@ -23,14 +22,6 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-
-_module = sys.modules.get(__name__)
-if _module is None:
-    _module = types.ModuleType(__name__)
-    _module.__dict__.update(globals())
-    sys.modules[__name__] = _module
-sys.modules.setdefault("utils.dataextractor", _module)
-sys.modules.setdefault("pcr_v2.utils.dataextractor", _module)
 
 PRECISION = 2
 
