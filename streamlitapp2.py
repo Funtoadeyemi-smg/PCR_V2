@@ -288,8 +288,8 @@ with st.container():
     with upload_cols[0]:
         st.markdown("<div class='upload-card'><h4>Meta Campaign (Required)</h4><div class='upload-desc'>Upload the consolidated Meta performance export (.xlsx).</div>", unsafe_allow_html=True)
         meta_file = st.file_uploader(
-            "Meta Excel File (Required)",
-            type=["xlsx"],
+            "Meta Performance File (Required)",
+            type=["xlsx", "csv"],
             key=f"meta_uploader{upload_key_suffix}",
         )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -297,8 +297,8 @@ with st.container():
     with upload_cols[1]:
         st.markdown("<div class='upload-card'><h4>Media Plan (Optional)</h4><div class='upload-desc'>Include the planning sheet to compare estimated vs actual performance.</div>", unsafe_allow_html=True)
         media_plan_file = st.file_uploader(
-            "Media Plan Excel File (Optional)",
-            type=["xlsx"],
+            "Media Plan File (Optional)",
+            type=["xlsx", "csv"],
             key=f"media_plan_uploader{upload_key_suffix}",
         )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -308,8 +308,8 @@ with st.container():
     with upload_cols_2[0]:
         st.markdown("<div class='upload-card'><h4>Pinterest Performance (Optional)</h4><div class='upload-desc'>CSV export from Pinterest Ads Manager.</div>", unsafe_allow_html=True)
         pinterest_file = st.file_uploader(
-            "Pinterest CSV File (Optional)",
-            type=["csv"],
+            "Pinterest Performance File (Optional)",
+            type=["csv", "xlsx"],
             key=f"pinterest_uploader{upload_key_suffix}",
         )
         st.markdown("</div>", unsafe_allow_html=True)

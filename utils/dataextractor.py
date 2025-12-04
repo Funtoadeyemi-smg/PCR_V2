@@ -436,6 +436,12 @@ class ConsolidatedDataExtractor:
     def _load_media_plan(self, path: str) -> pd.DataFrame:
         required_columns = {col.lower() for col in REQUIRED_COLUMNS["media_plan"]}
 
+        suffix = Path(path).suffix.lower()
+        if suffix in (".csv", ".txt"):
+            df = pd.read_csv(path)
+            df.columns = [str(col).strip() for col in df.columns]
+            return df.dropna(how="all")
+
         try:
             preview = pd.read_excel(path, header=None, nrows=60)
         except Exception:
