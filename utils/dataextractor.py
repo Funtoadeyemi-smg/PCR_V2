@@ -1013,7 +1013,21 @@ class ConsolidatedDataExtractor:
             return {}
 
         df = df.copy()
+        original_platform = df["Platform"].copy()
         df["Platform"] = df["Platform"].fillna(method="ffill")
+
+        selector_cols = [
+            "Format & placement",
+            "Targeting segment",
+            "Audience Data Source",
+            "Channel",
+        ]
+        channel_total_mask = original_platform.isna()
+        for col in selector_cols:
+            if col in df.columns:
+                channel_total_mask &= df[col].isna()
+        channel_total_mask &= df["Gross spend by channel / platform"].notna()
+        df["_is_channel_total"] = channel_total_mask
 
         grouped = df.groupby("Platform")
 
@@ -1030,42 +1044,25 @@ class ConsolidatedDataExtractor:
             if not key:
                 continue
 
-            selector_cols = [
-                "Format & placement",
-                "Targeting segment",
-                "Audience Data Source",
-                "Channel",
-            ]
-            total_candidate = group.copy()
-            for col in selector_cols:
-                if col in total_candidate.columns:
-                    total_candidate = total_candidate[total_candidate[col].isna()]
-            total_candidate = total_candidate[total_candidate["Gross spend by channel / platform"].notna()]
+            details = group[~group["_is_channel_total"]]
+            if details.empty:
+                details = group
 
-            if not total_candidate.empty:
-                total_row = total_candidate.iloc[-1]
-                est_gross = coerce_float(total_row.get("Gross spend by channel / platform"))
-                est_impressions = coerce_float(total_row.get("Estimated Impressions"))
-                est_clicks = coerce_float(total_row.get("Estimated link clicks"))
-                est_reach = coerce_float(total_row.get("Estimated Reach"))
-                raw_ctr = coerce_float(total_row.get("Estimated CTR"))
-                est_cpm = coerce_float(total_row.get("Net CPM"))
-                raw_freq = total_row.get("Estimated Frequency")
-                est_freq = coerce_float(raw_freq) if raw_freq is not None else safe_div(est_impressions, est_reach)
+            est_gross = float(details["Gross spend by channel / platform"].fillna(0).sum())
+            est_impressions = float(details["Estimated Impressions"].fillna(0).sum())
+            est_clicks = float(details["Estimated link clicks"].fillna(0).sum())
+            est_reach = float(details["Estimated Reach"].fillna(0).sum())
+            est_ctr_series = details["Estimated CTR"].dropna()
+            raw_ctr = coerce_float(est_ctr_series.iloc[0]) if not est_ctr_series.empty else 0.0
+
+            est_cpm_series = details["Net CPM"].dropna()
+            est_cpm = coerce_float(est_cpm_series.iloc[0]) if not est_cpm_series.empty else 0.0
+
+            est_freq_series = details["Estimated Frequency"].dropna()
+            if not est_freq_series.empty:
+                est_freq = coerce_float(est_freq_series.iloc[0])
             else:
-                est_gross = float(group["Gross spend by channel / platform"].fillna(0).sum())
-                est_impressions = float(group["Estimated Impressions"].fillna(0).sum())
-                est_clicks = float(group["Estimated link clicks"].fillna(0).sum())
-                est_reach = float(group["Estimated Reach"].fillna(0).sum())
-                est_ctr_series = group["Estimated CTR"].dropna()
-                raw_ctr = coerce_float(est_ctr_series.iloc[0]) if not est_ctr_series.empty else 0.0
-                est_cpm_series = group["Net CPM"].dropna()
-                est_cpm = coerce_float(est_cpm_series.iloc[0]) if not est_cpm_series.empty else 0.0
-                est_freq_series = group["Estimated Frequency"].dropna()
-                if not est_freq_series.empty:
-                    est_freq = coerce_float(est_freq_series.iloc[0])
-                else:
-                    est_freq = safe_div(est_impressions, est_reach)
+                est_freq = safe_div(est_impressions, est_reach)
 
             est_ctr = raw_ctr * 100 if raw_ctr and raw_ctr <= 1 else raw_ctr
             estimates[key] = {
@@ -1077,6 +1074,9 @@ class ConsolidatedDataExtractor:
                 "net_cpm": est_cpm,
                 "frequency": est_freq,
             }
+
+        if "_is_channel_total" in df.columns:
+            df.drop(columns=["_is_channel_total"], inplace=True, errors="ignore")
 
         return estimates
 
