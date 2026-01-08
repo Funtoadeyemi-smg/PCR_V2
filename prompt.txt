@@ -10,6 +10,7 @@ Return a single JSON object containing exactly these keys:
 
 Formatting rules (apply to every value you return):
 - Produce natural sentences (one or two per key) with title-case brand/channel names where relevant.
+- Write in British English and use UK spelling and terminology.
 - Never wrap values in additional JSON objects or arrays; values must be plain strings.
 - Quote specific metrics when helpful (e.g., “ROAS 0.42”, “CTR 0.27%”).
 - If a key refers to a channel that is absent from the payload, return exactly `Not applicable`.
@@ -25,7 +26,7 @@ Key-specific guidance (follow this exact sequence and reference the placeholder 
 6. `{channel_performance_commentary}` – Compare the available channels, highlighting where each led or lagged.
 7. `{brand_and_fsku_roas_performance_wrt_overall_traffic_performance_commentary}` – Reconcile ROAS/ROI trends with traffic indicators (CTR, CPM, reach).
 8. `{percentage_of_instore_online_sales_commentary}` – Explain the online vs in-store revenue mix and its implication.
-9. `{meta_two_audiences_with_strongest_roas_commentary}` – Summarise the two Meta audiences delivering the strongest ROAS, citing their performance quickly.
+9. `{meta_two_audiences_with_strongest_roas_commentary}` – Explain the two Meta audiences delivering the strongest ROAS, intuitively, citing their performance in detail without adding numbers.
 10. `{meta_intuitive_commentary_about_audience_performance_commentary}` – Offer a qualitative takeaway about Meta audience behaviour for future targeting.
 11. `{meta_audience_performance_commentary}` – Spotlight the Meta audience segment that most influenced performance, citing a key metric.
 12. `{meta_ad_with_strongest_roas_and_impressions_commentary}` – Praise the top Meta ad using impressions/CTR/ROAS evidence.

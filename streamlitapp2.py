@@ -1,11 +1,20 @@
 import base64
 import os
+import re
 import tempfile
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
+import pandas as pd
 import streamlit as st
+from pydantic import ValidationError
 
-from utils.dataextractor import ConsolidatedDataExtractor
+from utils.dataextractor import (
+    REQUIRED_COLUMNS,
+    ConsolidatedDataExtractor,
+    detect_tiktok_file_role,
+    identify_trailing_summary_row,
+)
 from utils.powerpointprocessor import PowerPointProcessor
 
 DEFAULT_CAMPAIGN_OBJECTIVE = (
@@ -167,6 +176,293 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+CHANNEL_LABELS = {"meta": "Meta", "pin": "Pinterest", "tik": "TikTok"}
+OPTIONAL_CHANNELS = ["pin", "tik"]
+SUMMARY_PAGE_NUMBERS = {"overall": 7, "meta": 13, "pin": 21, "tik": 29}
+
+OVERALL_PREVIEW_FIELDS = [
+    ("Gross spend", "gross_spend", "gross_est"),
+    ("Impressions", "impressions", "imp_est"),
+    ("Reach", "reach", None),
+    ("Clicks", "clicks", "click_est"),
+    ("CTR", "ctr", "ctr_est"),
+    ("Net CPM", "net_cpm", "net_cpm_est"),
+    ("Frequency", "freq_est", None),
+    ("Brand revenue", "brand_rev", None),
+    ("Brand ROAS", "brand_roas", None),
+    ("Brand ROI", "brand_roi", None),
+]
+
+OVERALL_DELTA_FIELDS = [
+    ("Impressions vs plan", "perc_imp"),
+    ("Clicks vs plan", "perc_clicks"),
+]
+
+CHANNEL_PREVIEW_FIELDS = [
+    ("Gross spend", "gross_spend", "est_spend"),
+    ("Net spend", "net_spend", None),
+    ("Impressions", "impressions", "est_imp"),
+    ("Reach", "reach", "est_reach"),
+    ("Clicks", "clicks", "est_clicks"),
+    ("CTR", "ctr", "est_ctr"),
+    ("Net CPM", "net_cpm", "est_cpm"),
+    ("Frequency", "freq", "est_freq"),
+    ("Brand revenue", "brand_revenue", None),
+    ("Brand ROAS", "brand_roas", None),
+    ("Brand ROI", "brand_roi", None),
+]
+
+
+def load_dataframe_from_upload(uploaded_file, required_key: Optional[str] = None) -> Optional[pd.DataFrame]:
+    if uploaded_file is None:
+        return None
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        return None
+    suffix = Path(uploaded_file.name).suffix.lower()
+    try:
+        if suffix in {".csv", ".txt"}:
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    except Exception:
+        uploaded_file.seek(0)
+        return None
+    finally:
+        uploaded_file.seek(0)
+
+    if required_key:
+        required_columns = {col.lower() for col in REQUIRED_COLUMNS.get(required_key, set())}
+        detected = {str(col).strip().lower() for col in df.columns}
+        if required_columns and not required_columns.issubset(detected) and suffix not in {".csv", ".txt"}:
+            try:
+                preview = pd.read_excel(uploaded_file, header=None, nrows=60)
+                uploaded_file.seek(0)
+                header_row = 0
+                for idx, row in preview.iterrows():
+                    normalized = {
+                        re.sub(r"\s+", " ", str(value).strip().lower())
+                        for value in row.tolist()
+                        if pd.notna(value) and str(value).strip()
+                    }
+                    if required_columns.issubset(normalized):
+                        header_row = idx
+                        break
+                df = pd.read_excel(uploaded_file, header=header_row)
+            except Exception:
+                uploaded_file.seek(0)
+                pass
+            finally:
+                uploaded_file.seek(0)
+    return df
+
+
+def _build_rename_map_local(mapping: Dict[str, str], columns: Iterable[str]) -> Dict[str, str]:
+    rename_map: Dict[str, str] = {}
+    column_set = set(columns)
+    for target, original in mapping.items():
+        if original and original in column_set:
+            rename_map[original] = target
+    return rename_map
+
+
+def render_preflight_report(
+    title: str,
+    df: pd.DataFrame,
+    required_key: str,
+    mapping_key: str,
+) -> None:
+    mapping = st.session_state.column_mappings.setdefault(mapping_key, {})
+    rename_map = _build_rename_map_local(mapping, df.columns)
+    df_mapped = df.rename(columns=rename_map)
+    renamed_columns = {col.strip() for col in df_mapped.columns}
+    required_columns = {col.strip() for col in REQUIRED_COLUMNS.get(required_key, set())}
+    missing_columns = sorted(required_columns - renamed_columns)
+
+    with st.expander(f"{title} ({len(df)} rows, {len(df.columns)} columns)", expanded=False):
+        st.markdown("**Detected columns**")
+        st.dataframe(pd.DataFrame({"Column": df.columns}), use_container_width=True)
+
+        if missing_columns:
+            st.warning(
+                "Missing required columns after applying mappings: "
+                + ", ".join(missing_columns)
+            )
+        else:
+            st.success("All required columns detected.")
+
+        for required_col in sorted(required_columns):
+            current_original = mapping.get(required_col, "(Not mapped)")
+            options = ["(Not mapped)"] + sorted(df.columns)
+            if current_original not in options:
+                current_original = "(Not mapped)"
+            show_selector = (required_col in missing_columns) or (current_original != "(Not mapped)")
+            if show_selector:
+                selection = st.selectbox(
+                    f"Map column to `{required_col}`",
+                    options=options,
+                    index=options.index(current_original),
+                    key=f"map_{mapping_key}_{required_col}",
+                )
+                if selection == "(Not mapped)":
+                    mapping.pop(required_col, None)
+                else:
+                    mapping[required_col] = selection
+
+        processing_notes: List[str] = []
+        if mapping_key in {"tik_audience", "tik_ad"}:
+            key_candidates = ["Ad group name"] if mapping_key == "tik_audience" else ["Ad", "Ad name"]
+            summary_label: Optional[str] = None
+            trimmed_df = df_mapped
+            for candidate in key_candidates:
+                summary_info = identify_trailing_summary_row(df_mapped, candidate)
+                if summary_info:
+                    index, label = summary_info
+                    summary_label = label
+                    trimmed_df = df_mapped.iloc[:index]
+                    break
+            if summary_label:
+                processing_notes.append(
+                    f"Trailing summary row `{summary_label}` will be ignored during aggregation."
+                )
+            if mapping_key == "tik_ad" and {"Cost", "Impressions"}.issubset(trimmed_df.columns):
+                cost = pd.to_numeric(trimmed_df["Cost"], errors="coerce").fillna(0)
+                impressions = pd.to_numeric(trimmed_df["Impressions"], errors="coerce").fillna(0)
+                skipped_rows = int(((cost <= 0) | (impressions <= 0)).sum())
+                if skipped_rows:
+                    processing_notes.append(
+                        f"{skipped_rows} ad row(s) without spend or impressions will be skipped when identifying leading creatives."
+                    )
+
+        st.markdown("**Preview (first 5 rows)**")
+        st.dataframe(df.head(), use_container_width=True)
+        if processing_notes:
+            st.markdown("**Processing notes**")
+            for note in processing_notes:
+                st.markdown(f"- {note}")
+
+
+def build_summary_preview(replacements: Dict[str, str], channels: List[str]) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    def value_for(key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        return replacements.get(f"{{{key}}}")
+
+    def normalise(value: Optional[str], dash_when_missing: bool = False) -> str:
+        if value is None or value == "":
+            return "—" if dash_when_missing else "N/A"
+        return value
+
+    overall_rows: List[Dict[str, str]] = []
+    for label, actual_key, plan_key in OVERALL_PREVIEW_FIELDS:
+        actual_val = value_for(actual_key)
+        plan_val = value_for(plan_key) if plan_key else None
+        if actual_val is None and plan_val is None:
+            continue
+        overall_rows.append(
+            {
+                "Metric": label,
+                "Actual": normalise(actual_val),
+                "Plan": normalise(plan_val, dash_when_missing=plan_key is not None),
+            }
+        )
+    for label, delta_key in OVERALL_DELTA_FIELDS:
+        delta_val = value_for(delta_key)
+        if delta_val:
+            overall_rows.append(
+                {
+                    "Metric": label,
+                    "Actual": normalise(delta_val),
+                    "Plan": "—",
+                }
+            )
+
+    channel_rows: Dict[str, List[Dict[str, str]]] = {}
+    for prefix in channels:
+        rows: List[Dict[str, str]] = []
+        for label, actual_key, plan_key in CHANNEL_PREVIEW_FIELDS:
+            actual_val = replacements.get(f"{{{prefix}_{actual_key}}}")
+            plan_val = replacements.get(f"{{{prefix}_{plan_key}}}") if plan_key else None
+            if actual_val is None and plan_val is None:
+                continue
+            rows.append(
+                {
+                    "Metric": label,
+                    "Actual": normalise(actual_val),
+                    "Plan": normalise(plan_val, dash_when_missing=plan_key is not None),
+                }
+            )
+        channel_rows[prefix] = rows
+
+    return {"overall": overall_rows, "channels": channel_rows}
+
+
+def render_report_preview(preview: Optional[Dict[str, Dict[str, List[Dict[str, str]]]]], channels: List[str]) -> None:
+    st.markdown("<div class='card'><div class='section-title'>Report Preview</div>", unsafe_allow_html=True)
+    if not preview:
+        st.info("Generate a report to preview the summary slides.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    overall_rows = preview.get("overall", [])
+    if overall_rows:
+        page = SUMMARY_PAGE_NUMBERS.get("overall")
+        st.markdown(f"**Overall summary (page {page})**" if page else "**Overall summary**")
+        st.table(pd.DataFrame(overall_rows))
+
+    for prefix in channels:
+        channel_rows = preview.get("channels", {}).get(prefix, [])
+        if not channel_rows:
+            continue
+        page = SUMMARY_PAGE_NUMBERS.get(prefix)
+        channel_name = CHANNEL_LABELS.get(prefix, prefix.title())
+        title = f"**{channel_name} summary (page {page})**" if page else f"**{channel_name} summary**"
+        st.markdown(title)
+        st.table(pd.DataFrame(channel_rows))
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def determine_tiktok_role(filename: str, df: pd.DataFrame) -> str:
+    try:
+        return detect_tiktok_file_role(df)
+    except ValueError:
+        audience_map = _build_rename_map_local(
+            st.session_state.column_mappings.get("tik_audience", {}),
+            df.columns,
+        )
+        if audience_map:
+            try:
+                return detect_tiktok_file_role(df.rename(columns=audience_map))
+            except ValueError:
+                pass
+        ad_map = _build_rename_map_local(
+            st.session_state.column_mappings.get("tik_ad", {}),
+            df.columns,
+        )
+        if ad_map:
+            try:
+                return detect_tiktok_file_role(df.rename(columns=ad_map))
+            except ValueError:
+                pass
+
+        role_labels = {
+            "audience": "Audience-level report (Ad group performance)",
+            "ad": "Ad-level report",
+        }
+        default_choice = st.session_state.tiktok_file_roles.get(filename, "audience")
+        options = list(role_labels.keys())
+        index = options.index(default_choice) if default_choice in options else 0
+        selection = st.selectbox(
+            f"Select TikTok file type for `{filename}`",
+            options=options,
+            index=index,
+            format_func=lambda key: role_labels[key],
+            key=f"tik_role_{filename}",
+        )
+        return selection
+
 
 def load_logo_base64(file_path):
     with open(file_path, "rb") as f:
@@ -215,6 +511,30 @@ if "primary_kpis_selected" not in st.session_state:
 if "secondary_kpis_selected" not in st.session_state:
     st.session_state.secondary_kpis_selected: List[str] = []
 
+if "generated_report" not in st.session_state:
+    st.session_state.generated_report = None
+
+if "primary_kpi_widget_version" not in st.session_state:
+    st.session_state.primary_kpi_widget_version = 0
+
+if "secondary_kpi_widget_version" not in st.session_state:
+    st.session_state.secondary_kpi_widget_version = 0
+
+if "column_mappings" not in st.session_state:
+    st.session_state.column_mappings = {
+        "meta": {},
+        "pinterest": {},
+        "tik_audience": {},
+        "tik_ad": {},
+        "media_plan": {},
+    }
+
+if "tiktok_file_roles" not in st.session_state:
+    st.session_state.tiktok_file_roles = {}
+
+if "selected_optional_channels" not in st.session_state:
+    st.session_state.selected_optional_channels = []
+
 if "toc_image" not in st.session_state:
     st.session_state.toc_image = None
 
@@ -258,23 +578,51 @@ with st.container():
         "CTR (Click Through Rate)",
     ]
 
-    primary_selection = st.multiselect(
+    primary_key = f"primary_kpi_selector_{st.session_state.primary_kpi_widget_version}"
+    secondary_key = f"secondary_kpi_selector_{st.session_state.secondary_kpi_widget_version}"
+
+    if primary_key not in st.session_state:
+        st.session_state[primary_key] = st.session_state.primary_kpis_selected
+    if secondary_key not in st.session_state:
+        st.session_state[secondary_key] = st.session_state.secondary_kpis_selected
+
+    def _on_primary_change(key: str = primary_key):
+        selected = st.session_state.get(key, [])
+        st.session_state.primary_kpis_selected = selected
+        st.session_state.primary_kpis = ", ".join(selected) if selected else ""
+        st.session_state.primary_kpi_widget_version += 1
+        st.session_state.pop(key, None)
+        st.rerun()
+
+    def _on_secondary_change(key: str = secondary_key):
+        selected = st.session_state.get(key, [])
+        st.session_state.secondary_kpis_selected = selected
+        st.session_state.secondary_kpis = ", ".join(selected) if selected else ""
+        st.session_state.secondary_kpi_widget_version += 1
+        st.session_state.pop(key, None)
+        st.rerun()
+
+    st.multiselect(
         "Primary KPI(s)",
         options=kpi_options,
-        default=st.session_state.primary_kpis_selected,
+        key=primary_key,
         help="Select the KPIs that are considered the primary success measures for this campaign.",
+        on_change=_on_primary_change,
     )
-    st.session_state.primary_kpis_selected = primary_selection
-    st.session_state.primary_kpis = ", ".join(primary_selection) if primary_selection else ""
 
-    secondary_selection = st.multiselect(
+    st.multiselect(
         "Secondary KPI(s)",
         options=kpi_options,
-        default=st.session_state.secondary_kpis_selected,
+        key=secondary_key,
         help="Select supporting KPIs that provide additional context.",
+        on_change=_on_secondary_change,
     )
-    st.session_state.secondary_kpis_selected = secondary_selection
-    st.session_state.secondary_kpis = ", ".join(secondary_selection) if secondary_selection else ""
+
+    # Ensure textual values stay in sync even if no change callback fired during this run
+    st.session_state.primary_kpis = ", ".join(st.session_state.primary_kpis_selected) if st.session_state.primary_kpis_selected else ""
+    st.session_state.secondary_kpis = (
+        ", ".join(st.session_state.secondary_kpis_selected) if st.session_state.secondary_kpis_selected else ""
+    )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -366,9 +714,83 @@ if pinterest_file is not None:
 
 if tiktok_files:
     st.session_state.tiktok_files = tiktok_files
+if st.session_state.tiktok_files:
+    current_names = {uploaded.name for uploaded in st.session_state.tiktok_files}
+    st.session_state.tiktok_file_roles = {
+        name: role
+        for name, role in st.session_state.tiktok_file_roles.items()
+        if name in current_names
+    }
 
 if media_plan_file is not None:
     st.session_state.media_plan_file = media_plan_file
+
+with st.container():
+    st.markdown("<div class='card'><div class='section-title'>Data Pre-flight Checks</div>", unsafe_allow_html=True)
+
+    meta_source = st.session_state.meta_file
+    if meta_source:
+        df_meta = load_dataframe_from_upload(meta_source, required_key="meta")
+        if df_meta is not None:
+            render_preflight_report("Meta Performance", df_meta, "meta", "meta")
+    else:
+        st.info("Upload the Meta performance file to view validation results.")
+
+    if st.session_state.pinterest_file:
+        df_pin = load_dataframe_from_upload(st.session_state.pinterest_file, required_key="pinterest")
+        if df_pin is not None:
+            render_preflight_report("Pinterest Performance", df_pin, "pinterest", "pinterest")
+
+    if st.session_state.tiktok_files:
+        for uploaded in st.session_state.tiktok_files:
+            df_tik = load_dataframe_from_upload(uploaded)
+            if df_tik is None:
+                continue
+            role = determine_tiktok_role(uploaded.name, df_tik)
+            st.session_state.tiktok_file_roles[uploaded.name] = role
+            mapping_key = "tik_audience" if role == "audience" else "tik_ad"
+            title = f"TikTok ({'Audience' if role == 'audience' else 'Ad'}): {uploaded.name}"
+            render_preflight_report(title, df_tik, mapping_key, mapping_key)
+
+    if st.session_state.media_plan_file:
+        df_media = load_dataframe_from_upload(st.session_state.media_plan_file, required_key="media_plan")
+        if df_media is not None:
+            render_preflight_report("Media Plan", df_media, "media_plan", "media_plan")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with st.container():
+    st.markdown("<div class='card'><div class='section-title'>Report Sections</div>", unsafe_allow_html=True)
+    available_optional = [
+        ch
+        for ch in OPTIONAL_CHANNELS
+        if (ch == "pin" and st.session_state.pinterest_file)
+        or (ch == "tik" and st.session_state.tiktok_files)
+    ]
+    if available_optional:
+        if not st.session_state.selected_optional_channels:
+            st.session_state.selected_optional_channels = available_optional.copy()
+        else:
+            st.session_state.selected_optional_channels = [
+                ch for ch in st.session_state.selected_optional_channels if ch in available_optional
+            ]
+            if not st.session_state.selected_optional_channels:
+                st.session_state.selected_optional_channels = available_optional.copy()
+        if len(available_optional) > 1:
+            selection = st.multiselect(
+                "Optional channel sections to include in the PowerPoint",
+                options=available_optional,
+                default=st.session_state.selected_optional_channels,
+                format_func=lambda ch: CHANNEL_LABELS.get(ch, ch.title()),
+            )
+            st.session_state.selected_optional_channels = selection
+        else:
+            st.session_state.selected_optional_channels = available_optional.copy()
+            channel_name = CHANNEL_LABELS.get(available_optional[0], available_optional[0].title())
+            st.markdown(f"<p style='color:#94a3b8;'>Including {channel_name} section automatically.</p>", unsafe_allow_html=True)
+    else:
+        st.markdown("<p style='color:#94a3b8;'>Only Meta data provided; optional channel sections are not available.</p>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -437,6 +859,7 @@ with col1:
                 image_placeholders["{campaign_summary_picture}"] = summary_path
 
             # Run processing
+            processing_warnings: List[str] = []
             with st.spinner("Generating your PowerPoint report..."):
                 extractor = ConsolidatedDataExtractor(
                     meta_file=meta_path,
@@ -448,27 +871,62 @@ with col1:
                     manual_campaign_objective=st.session_state.campaign_objective,
                     manual_primary_kpis=st.session_state.primary_kpis,
                     manual_secondary_kpis=st.session_state.secondary_kpis,
+                    column_mappings=st.session_state.column_mappings,
                 )
-                replacements, channels_present = extractor.extract_values()
+                try:
+                    replacements, channels_present = extractor.extract_values()
+                    processing_warnings = extractor.warnings.copy()
+                except (ValueError, ValidationError) as exc:
+                    st.error(f"Data validation failed: {exc}")
+                    st.info("Please correct the highlighted file(s) and re-upload to continue.")
+                    st.stop()
+
+                optional_selection = set(st.session_state.selected_optional_channels or [])
+                channels_to_include: List[str] = []
+                for channel in channels_present:
+                    if channel in OPTIONAL_CHANNELS:
+                        if channel in optional_selection:
+                            channels_to_include.append(channel)
+                    else:
+                        channels_to_include.append(channel)
+                if "meta" not in channels_to_include and "meta" in channels_present:
+                    channels_to_include.append("meta")
 
                 output_path = os.path.join(tmpdir, "automated_presentation.pptx")
                 ppt = PowerPointProcessor(ppt_template_path)
                 ppt.replace_placeholders(
                     replacements,
-                    channels_present,
+                    channels_to_include,
                     output_path,
                     image_placeholders=image_placeholders,
                 )
 
-            # Download output
-            with open(output_path, "rb") as file:
-                st.success("✅ PowerPoint report generated!")
-                st.download_button(
-                    label="📥 Download Report",
-                    data=file,
-                    file_name="automated_presentation.pptx",
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                )
+            with open(output_path, "rb") as generated_file:
+                ppt_bytes = generated_file.read()
+
+            excluded_channels = {ch for ch in channels_present if ch not in channels_to_include}
+            if processing_warnings and excluded_channels:
+                def _warning_relates_to_excluded(message: str) -> bool:
+                    for channel in excluded_channels:
+                        if f"prefix '{channel}'" in message:
+                            return True
+                        channel_label = CHANNEL_LABELS.get(channel, channel.title())
+                        if channel_label in message:
+                            return True
+                    return False
+
+                processing_warnings = [
+                    msg for msg in processing_warnings if not _warning_relates_to_excluded(msg)
+                ]
+
+            preview_payload = build_summary_preview(replacements, channels_to_include)
+            st.session_state.generated_report = {
+                "bytes": ppt_bytes,
+                "filename": "automated_presentation.pptx",
+                "warnings": processing_warnings,
+                "preview": preview_payload,
+                "channels": channels_to_include,
+            }
 with col4:
     if st.button("Reset Uploads"):
         # Toggle the reset state to force file uploader widgets to create new instances
@@ -485,4 +943,34 @@ with col4:
         st.session_state.secondary_kpis_selected = []
         st.session_state.toc_image = None
         st.session_state.summary_image = None
+        st.session_state.column_mappings = {
+            "meta": {},
+            "pinterest": {},
+            "tik_audience": {},
+            "tik_ad": {},
+            "media_plan": {},
+        }
+        st.session_state.tiktok_file_roles = {}
+        st.session_state.selected_optional_channels = []
+        st.session_state.generated_report = None
         st.rerun()
+
+report_state = st.session_state.get("generated_report")
+if report_state:
+    st.markdown("<div class='card'><div class='section-title'>Report Output</div>", unsafe_allow_html=True)
+    st.success("✅ PowerPoint report generated!")
+    warnings = report_state.get("warnings") or []
+    if warnings:
+        st.warning(
+            "Data issues detected during processing:\n"
+            + "\n".join(f"- {message}" for message in warnings)
+        )
+    st.download_button(
+        label="📥 Download Report",
+        data=report_state.get("bytes"),
+        file_name=report_state.get("filename", "automated_presentation.pptx"),
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        key="download_report",
+    )
+    render_report_preview(report_state.get("preview"), report_state.get("channels", []))
+    st.markdown("</div>", unsafe_allow_html=True)

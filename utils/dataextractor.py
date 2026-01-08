@@ -167,11 +167,48 @@ def detect_tiktok_file_role(df: pd.DataFrame) -> str:
     raise ValueError("Unable to determine TikTok file type. Expected 'Ad group name' or 'Ad name' column.")
 
 
+def identify_trailing_summary_row(df: pd.DataFrame, key_column: str) -> Optional[Tuple[int, str]]:
+    """Return the index and label of the last meaningful row if it is a summary."""
+    if key_column not in df.columns or df.empty:
+        return None
+
+    key_series = df[key_column].astype(str)
+    for pos in range(len(df) - 1, -1, -1):
+        raw_value = key_series.iloc[pos]
+        label = str(raw_value).strip()
+        if not label:
+            continue
+        lowered = label.lower()
+        if lowered.startswith("total") or lowered.startswith("sum"):
+            return pos, label
+        break
+    return None
+
+
 def drop_total_rows(df: pd.DataFrame, key_column: str) -> pd.DataFrame:
-    if key_column not in df.columns:
+    summary = identify_trailing_summary_row(df, key_column)
+    if not summary:
         return df
-    mask = df[key_column].astype(str).str.lower().str.startswith("total")
-    return df[~mask].copy()
+    index, _ = summary
+    return df.iloc[:index].copy()
+
+
+def _build_rename_map(mapping: Dict[str, str], df_columns: Iterable[str]) -> Dict[str, str]:
+    if not mapping:
+        return {}
+    rename_map: Dict[str, str] = {}
+    df_columns_set = set(df_columns)
+    for target, original in mapping.items():
+        if original and original in df_columns_set:
+            rename_map[original] = target
+    return rename_map
+
+
+def _is_nan(value: object) -> bool:
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +341,7 @@ class ConsolidatedDataExtractor:
         manual_campaign_objective: Optional[str] = None,
         manual_primary_kpis: Optional[str] = None,
         manual_secondary_kpis: Optional[str] = None,
+        column_mappings: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> None:
         self.meta_file = meta_file
         self.pinterest_file = pinterest_file
@@ -314,20 +352,35 @@ class ConsolidatedDataExtractor:
         self.manual_campaign_objective = (manual_campaign_objective or "").strip()
         self.manual_primary_kpis = (manual_primary_kpis or "").strip()
         self.manual_secondary_kpis = (manual_secondary_kpis or "").strip()
+        self.column_mappings = column_mappings or {}
+        self.warnings: List[str] = []
 
         self.channels_present: List[str] = ["meta"]
+    def _warn(self, message: str) -> None:
+        if message not in self.warnings:
+            self.warnings.append(message)
 
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
+    def _apply_column_mapping(self, df: pd.DataFrame, mapping_key: str) -> pd.DataFrame:
+        mapping = self.column_mappings.get(mapping_key)
+        if not mapping:
+            return df
+        rename_map = _build_rename_map(mapping, df.columns)
+        if rename_map:
+            df = df.rename(columns=rename_map)
+        return df
 
     def extract_values(self) -> Tuple[Dict[str, str], List[str]]:
         meta_df, meta_conversion_frames = self._load_meta_frames(self.meta_file)
+        meta_df = self._apply_column_mapping(meta_df, "meta")
         validate_dataframe("meta", meta_df)
 
         pinterest_df = None
         if self.pinterest_file:
             pinterest_df = self._load_generic_dataframe(self.pinterest_file)
+            pinterest_df = self._apply_column_mapping(pinterest_df, "pinterest")
             validate_dataframe("pinterest", pinterest_df)
             self.channels_present.append("pin")
 
@@ -338,6 +391,7 @@ class ConsolidatedDataExtractor:
         media_plan_df = None
         if self.media_plan_file:
             media_plan_df = self._load_media_plan(self.media_plan_file)
+            media_plan_df = self._apply_column_mapping(media_plan_df, "media_plan")
             validate_dataframe("media_plan", media_plan_df)
 
         meta_summary, meta_audiences, meta_ads = self._build_meta_summary(meta_df, meta_conversion_frames)
@@ -493,11 +547,32 @@ class ConsolidatedDataExtractor:
 
         for file_path in files:
             df = self._load_generic_dataframe(file_path)
-            role = detect_tiktok_file_role(df)
+            role: Optional[str] = None
+            try:
+                role = detect_tiktok_file_role(df)
+            except ValueError:
+                audience_map = _build_rename_map(self.column_mappings.get("tik_audience", {}), df.columns)
+                if audience_map:
+                    try:
+                        role = detect_tiktok_file_role(df.rename(columns=audience_map))
+                    except ValueError:
+                        role = None
+                if role is None:
+                    ad_map = _build_rename_map(self.column_mappings.get("tik_ad", {}), df.columns)
+                    if ad_map:
+                        try:
+                            role = detect_tiktok_file_role(df.rename(columns=ad_map))
+                        except ValueError:
+                            role = None
+                if role is None:
+                    raise
+
             if role == "audience":
+                df = self._apply_column_mapping(df, "tik_audience")
                 validate_dataframe("tik_audience", df)
                 audience_df = df
             else:
+                df = self._apply_column_mapping(df, "tik_ad")
                 validate_dataframe("tik_ad", df)
                 ad_df = df
 
@@ -898,23 +973,66 @@ class ConsolidatedDataExtractor:
         if audience_df is None and ad_df is None:
             raise ValueError("TikTok data requires at least an audience or ad level file.")
 
+        summary_row = None
+        detail_df = None
+
+        def _strip_summary_rows(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
+            if df is None or df.empty:
+                return df, None
+            prefixes = ("total", "sum")
+            summary_columns = ["Ad group name", "Ad name"]
+            last_row = df.iloc[-1]
+            is_summary = False
+            for col in summary_columns:
+                if col in df.columns:
+                    value = str(last_row.get(col, "")).strip().lower()
+                    if any(value.startswith(prefix) for prefix in prefixes):
+                        is_summary = True
+                        break
+            if is_summary:
+                return df.iloc[:-1].copy(), last_row
+            return df.copy(), None
+
         if audience_df is not None:
-            totals = coerce_total_row(
-                audience_df,
-                key_column="Ad group name",
-                numeric_columns=[
-                    "Cost",
-                    "Impressions",
-                    "Clicks (destination)",
-                    "Video views",
-                    "6-second video views",
-                ],
-            ).iloc[0]
-            net_spend = float(totals.get("Cost", 0))
-            impressions = float(totals.get("Impressions", 0))
-            reach = float(totals.get("Reach", 0))
-            clicks = float(totals.get("Clicks (destination)", 0))
-            frequency = float(totals.get("Frequency", 0))
+            detail_df, summary_row = _strip_summary_rows(audience_df)
+            detail_df = detail_df.copy()
+            for col in ["Cost", "Impressions", "Reach", "Clicks (destination)", "Frequency"]:
+                if col in detail_df.columns:
+                    detail_df[col] = pd.to_numeric(detail_df[col], errors="coerce")
+
+            net_spend = float(detail_df["Cost"].sum()) if "Cost" in detail_df.columns else 0.0
+            impressions = float(detail_df["Impressions"].sum()) if "Impressions" in detail_df.columns else 0.0
+            reach = float(detail_df["Reach"].sum()) if "Reach" in detail_df.columns else 0.0
+            clicks = float(
+                detail_df["Clicks (destination)"].sum()
+            ) if "Clicks (destination)" in detail_df.columns else 0.0
+            frequency = safe_div(impressions, reach)
+
+            if summary_row is not None:
+                def _coerce_summary(number_key: str, fallback: float) -> float:
+                    raw = summary_row.get(number_key)
+                    if raw is None:
+                        return fallback
+                    text = str(raw).strip()
+                    if not text:
+                        return fallback
+                    if text.endswith("%"):
+                        text = text[:-1]
+                    try:
+                        value = float(text)
+                    except ValueError:
+                        return fallback
+                    return value
+
+                net_spend = _coerce_summary("Cost", net_spend) or net_spend
+                impressions = _coerce_summary("Impressions", impressions) or impressions
+                reach_val = _coerce_summary("Reach", reach)
+                if reach_val:
+                    reach = reach_val
+                clicks = _coerce_summary("Clicks (destination)", clicks) or clicks
+                freq_val = _coerce_summary("Frequency", frequency)
+                if freq_val:
+                    frequency = freq_val
         else:
             base_df = ad_df.copy()
             base_df["Cost"] = base_df["Cost"].fillna(0)
@@ -986,32 +1104,95 @@ class ConsolidatedDataExtractor:
                 )
                 for _, row in filtered_audience.sort_values("Cost", ascending=False).head(12).iterrows()
             ]
+        if not audiences:
+            self._warn("No TikTok audience rows with spend and impressions. Audience breakdown will show N/A.")
 
         creatives: List[CreativePerformance] = []
+        ad_source: Optional[pd.DataFrame] = None
         if ad_df is not None:
-            filtered_ad = drop_total_rows(ad_df.copy(), "Ad name")
-            filtered_ad["CTR"] = filtered_ad["Clicks (destination)"].divide(
+            ad_source = ad_df.copy()
+        elif detail_df is not None and "Ad name" in detail_df.columns:
+            ad_source = detail_df.copy().rename(
+                columns={
+                    "Ad name": "Ad",
+                    "Cost": "Net_Spend",
+                    "Clicks (destination)": "Clicks",
+                }
+            )
+            if "Brand_Revenue" in ad_source.columns:
+                ad_source["Brand_Revenue"] = ad_source["Brand_Revenue"].fillna(0)
+            else:
+                ad_source["Brand_Revenue"] = 0.0
+
+        if ad_source is not None:
+            rename_candidates = {
+                "Ad name": "Ad",
+                "Cost": "Net_Spend",
+                "Clicks (destination)": "Clicks",
+            }
+            for original, target in rename_candidates.items():
+                if original in ad_source.columns and target not in ad_source.columns:
+                    ad_source = ad_source.rename(columns={original: target})
+            if "Brand_Revenue" not in ad_source.columns:
+                ad_source["Brand_Revenue"] = 0.0
+
+            for col in ["Net_Spend", "Impressions", "Reach", "Clicks", "Brand_Revenue"]:
+                if col in ad_source.columns:
+                    ad_source[col] = pd.to_numeric(ad_source[col], errors="coerce").fillna(0)
+
+            filtered_ad = drop_total_rows(ad_source.copy(), "Ad")
+            filtered_ad["CTR"] = filtered_ad["Clicks"].divide(
                 filtered_ad["Impressions"].replace({0: np.nan})
             ) * 100
-            filtered_ad["Net_CPM"] = filtered_ad["Cost"].divide(
+            filtered_ad["Net_CPM"] = filtered_ad["Net_Spend"].divide(
                 filtered_ad["Impressions"].replace({0: np.nan})
             ) * 1000
+            filtered_ad = filtered_ad[
+                (filtered_ad["Net_Spend"].fillna(0) > 0)
+                & (filtered_ad["Impressions"].fillna(0) > 0)
+            ]
+
+            grouped_ad = (
+                filtered_ad.groupby("Ad", dropna=False)
+                .agg(
+                    Net_Spend=("Net_Spend", "sum"),
+                    Impressions=("Impressions", "sum"),
+                    Reach=("Reach", "sum"),
+                    Clicks=("Clicks", "sum"),
+                    Brand_Revenue=("Brand_Revenue", "sum"),
+                )
+                .reset_index()
+            )
+            grouped_ad["CTR"] = grouped_ad["Clicks"].divide(
+                grouped_ad["Impressions"].replace({0: np.nan})
+            ) * 100
+            grouped_ad["Net_CPM"] = grouped_ad["Net_Spend"].divide(
+                grouped_ad["Impressions"].replace({0: np.nan})
+            ) * 1000
+            grouped_ad["Frequency"] = grouped_ad["Impressions"].divide(
+                grouped_ad["Reach"].replace({0: np.nan})
+            )
+            grouped_ad["ROAS"] = grouped_ad["Brand_Revenue"].divide(
+                grouped_ad["Net_Spend"].replace({0: np.nan})
+            )
 
             creatives = [
                 CreativePerformance(
-                    name=row["Ad name"],
-                    net_spend=float(row["Cost"]),
+                    name=row["Ad"],
+                    net_spend=float(row["Net_Spend"]),
                     impressions=float(row["Impressions"]),
                     reach=float(row["Reach"]),
                     frequency=float(row["Frequency"]) if not np.isnan(row["Frequency"]) else 0.0,
-                    clicks=float(row["Clicks (destination)"]),
+                    clicks=float(row["Clicks"]),
                     ctr=float(row["CTR"]) if not np.isnan(row["CTR"]) else 0.0,
                     net_cpm=float(row["Net_CPM"]) if not np.isnan(row["Net_CPM"]) else 0.0,
-                    revenue=0.0,
-                    roas=0.0,
+                    revenue=float(row["Brand_Revenue"]),
+                    roas=float(row["ROAS"]) if not np.isnan(row["ROAS"]) else 0.0,
                 )
-                for _, row in filtered_ad.iterrows()
+                for _, row in grouped_ad.iterrows()
             ]
+        if not creatives:
+            self._warn("No TikTok ads with measurable spend and impressions. Leading ad slide will show N/A.")
 
         return summary, audiences, creatives
 
@@ -1239,6 +1420,7 @@ class ConsolidatedDataExtractor:
     ) -> Dict[str, str]:
         replacements = {
             f"{{{prefix}_gross_spend}}": fmt_currency(summary.gross_spend),
+            f"{{{prefix}_net_spend}}": fmt_currency(summary.net_spend),
             f"{{{prefix}_net_cpm}}": fmt_currency(summary.net_cpm),
             f"{{{prefix}_impressions}}": fmt_int(summary.impressions),
             f"{{{prefix}_reach}}": fmt_int(summary.reach),
@@ -1358,6 +1540,7 @@ class ConsolidatedDataExtractor:
             replacements[f"{{{prefix}_netcpm_{idx}}}"] = fmt_currency(audience.net_cpm) if audience else "N/A"
             replacements[f"{{{prefix}_revenue_{idx}}}"] = fmt_currency(audience.revenue) if audience else "N/A"
             replacements[f"{{{prefix}_roas_{idx}}}"] = fmt_number(audience.roas) if audience else "N/A"
+            replacements[f"{{{prefix}_roi_{idx}}}"] = fmt_number(audience.roi) if audience else "N/A"
 
     def _creative_placeholders(
         self, prefix: str, creatives: Optional[List[CreativePerformance]]
@@ -1371,11 +1554,33 @@ class ConsolidatedDataExtractor:
             f"{{{prefix}_ad_with_weakest_roas_and_impressions_commentary}}": "Not applicable",
         }
 
+        channel_suffix = {"meta": "m", "pin": "p", "tik": "t"}.get(prefix, prefix[:1].lower())
+
+        metric_defaults: Dict[str, str] = {}
+        for base in ("adwithstrongestroas", "adwithweakestroas"):
+            metric_defaults.update(
+                {
+                    f"{{{base}_imp_{channel_suffix}}}": "N/A",
+                    f"{{{base}_reach_{channel_suffix}}}": "N/A",
+                    f"{{{base}_spend_{channel_suffix}}}": "N/A",
+                    f"{{{base}_freq_{channel_suffix}}}": "N/A",
+                    f"{{{base}_roas_{channel_suffix}}}": "N/A",
+                    f"{{{base}_cpm_{channel_suffix}}}": "N/A",
+                    f"{{{base}_clicks_{channel_suffix}}}": "N/A",
+                    f"{{{base}_ctr_{channel_suffix}}}": "N/A",
+                }
+            )
+        replacements.update(metric_defaults)
+
         if not creatives:
+            self._warn(f"No ad-level data found for prefix '{prefix}'. Creative slides will show N/A.")
             return replacements
 
-        channel_suffix = {"meta": "m", "pin": "p", "tik": "t"}.get(prefix, prefix[:1].lower())
-        sorted_creatives = sorted(creatives, key=lambda c: c.roas, reverse=True)
+        sorted_creatives = sorted(
+            creatives,
+            key=lambda c: (c.roas, c.net_spend, c.impressions),
+            reverse=True,
+        )
         strongest = sorted_creatives[0]
         weakest = sorted_creatives[-1]
 

@@ -6,13 +6,13 @@ from typing import Dict, Iterable, Optional, Sequence
 
 from pptx import Presentation
 from pptx.util import Inches
-from pptx.enum.shapes import PP_PLACEHOLDER
+from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
 
 class PowerPointProcessor:
     """Handles PowerPoint modifications for the consolidated template."""
 
-    _PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
+    _PLACEHOLDER_PATTERN = re.compile(r"(\s*)(£)?(\{[^{}]+\})(\s*)(%)?")
     _CHANNEL_DISPLAY = {
         "meta": "meta",
         "pin": "pinterest",
@@ -31,6 +31,10 @@ class PowerPointProcessor:
             "offset": 0,
             "mode": "cover",
         },
+    }
+    _IMAGE_FALLBACK_TARGETS = {
+        "{table_of_contents_picture}": 2,
+        "{campaign_summary_picture}": 4,
     }
 
     def __init__(self, pptx_file: str) -> None:
@@ -70,6 +74,8 @@ class PowerPointProcessor:
                 if value
             }
 
+        pending_images = dict(image_replacements)
+
         for slide_index, slide in enumerate(self.prs.slides):
             slide_placeholders: set = set()
             for shape in slide.shapes:
@@ -83,12 +89,14 @@ class PowerPointProcessor:
                             image_hit = self._find_image_placeholder(full_text, image_replacements)
                         if image_hit:
                             self._place_image(slide, shape, image_replacements[image_hit], image_hit)
+                            pending_images.pop(image_hit, None)
                             found_placeholders.add(image_hit)
                             slide_placeholders.add(image_hit)
                             image_replaced = True
                             break
-                        for token in self._PLACEHOLDER_PATTERN.findall(full_text):
-                            normalized = self._normalize_placeholder(token)
+                        for groups in self._PLACEHOLDER_PATTERN.findall(full_text):
+                            placeholder = groups[1] if isinstance(groups, tuple) else groups
+                            normalized = self._normalize_placeholder(placeholder)
                             channel = self._channel_from_placeholder(normalized)
                             if channel:
                                 shape_channel_tags.add(channel)
@@ -113,8 +121,9 @@ class PowerPointProcessor:
                         for cell in row.cells:
                             for paragraph in cell.text_frame.paragraphs:
                                 cell_text = "".join(run.text for run in paragraph.runs)
-                                for token in self._PLACEHOLDER_PATTERN.findall(cell_text):
-                                    normalized = self._normalize_placeholder(token)
+                                for groups in self._PLACEHOLDER_PATTERN.findall(cell_text):
+                                    placeholder = groups[1] if isinstance(groups, tuple) else groups
+                                    normalized = self._normalize_placeholder(placeholder)
                                     channel = self._channel_from_placeholder(normalized)
                                     if channel:
                                         shape_channel_tags.add(channel)
@@ -142,6 +151,7 @@ class PowerPointProcessor:
 
             self._remove_placeholder_only_rows(slide)
             self._slide_placeholders[slide_index] = slide_placeholders
+            self._apply_image_fallbacks(slide, slide_index + 1, pending_images)
 
         self._prune_channel_slides(channels_present)
         self._refresh_summary_charts()
@@ -163,36 +173,28 @@ class PowerPointProcessor:
         slide_found: set,
     ) -> str:
         def replace_match(match: re.Match) -> str:
-            raw = match.group(0)
-            normalized = self._normalize_placeholder(raw)
+            leading_ws = match.group(1) or ""
+            prefix = match.group(2) or ""
+            placeholder = match.group(3)
+            trailing_ws = match.group(4) or ""
+            suffix = match.group(5) or ""
+            normalized = self._normalize_placeholder(placeholder)
             if normalized in replacements:
                 global_found.add(normalized)
                 slide_found.add(normalized)
                 value = str(replacements[normalized])
-                full_text = match.string
-                prefix_char = None
-                suffix_char = None
-
-                idx = match.start() - 1
-                while idx >= 0 and full_text[idx].isspace():
-                    idx -= 1
-                if idx >= 0:
-                    prefix_char = full_text[idx]
-
-                idx = match.end()
-                length = len(full_text)
-                while idx < length and full_text[idx].isspace():
-                    idx += 1
-                if idx < length:
-                    suffix_char = full_text[idx]
-
-                if prefix_char == "£":
-                    value = value.lstrip(" £")
-                if suffix_char == "%":
-                    value = value.rstrip(" %")
-
-                return value
-            return raw
+                if prefix.strip() == "£":
+                    if value.lstrip().startswith("£"):
+                        value = value.lstrip(" £")
+                    else:
+                        prefix = ""
+                if suffix.strip() == "%":
+                    if value.rstrip().endswith("%"):
+                        suffix = ""
+                    else:
+                        suffix = "%"
+                return f"{leading_ws}{prefix}{value}{trailing_ws}{suffix}"
+            return match.group(0)
 
         return self._PLACEHOLDER_PATTERN.sub(replace_match, text)
 
@@ -203,7 +205,15 @@ class PowerPointProcessor:
                 row_indexes = []
                 for idx, row in enumerate(table.rows):
                     texts = [cell.text.strip() for cell in row.cells]
-                    if texts and all(text.startswith("{") and text.endswith("}") for text in texts):
+                    def _is_placeholder_entry(text: str) -> bool:
+                        cleaned = text.strip()
+                        if cleaned.startswith("£"):
+                            cleaned = cleaned[1:].strip()
+                        if cleaned.endswith("%"):
+                            cleaned = cleaned[:-1].strip()
+                        return cleaned.startswith("{") and cleaned.endswith("}")
+
+                    if texts and all(_is_placeholder_entry(text) for text in texts):
                         row_indexes.append(idx)
                 for idx in reversed(row_indexes):
                     tbl = table._tbl
@@ -336,10 +346,12 @@ class PowerPointProcessor:
 
     @staticmethod
     def _normalize_placeholder(raw: str) -> str:
+        if raw is None:
+            return ""
         raw = raw.strip()
         if not raw.startswith("{") or not raw.endswith("}"):
             return raw
-        body = raw[1:-1].replace(" ", "")
+        body = re.sub(r"\s+", "", raw[1:-1])
         return "{" + body + "}"
 
     @classmethod
@@ -380,10 +392,10 @@ class PowerPointProcessor:
     def _find_image_placeholder(text: str, image_replacements: Dict[str, str]) -> Optional[str]:
         if not text:
             return None
-        normalized_text = "".join(text.split())
-        for placeholder in image_replacements.keys():
-            if placeholder in normalized_text or placeholder in text:
-                return placeholder
+        for match in PowerPointProcessor._PLACEHOLDER_PATTERN.finditer(text):
+            normalized = PowerPointProcessor._normalize_placeholder(match.group(2))
+            if normalized in image_replacements:
+                return normalized
         return None
 
     def _place_image(self, slide, shape, image_path: str, placeholder: str) -> None:
@@ -495,9 +507,39 @@ class PowerPointProcessor:
             picture.left = left + int((width - picture.width) / 2)
             picture.top = top + int((height - picture.height) / 2)
 
+    def _apply_image_fallbacks(
+        self,
+        slide,
+        slide_number: int,
+        pending_images: Dict[str, str],
+    ) -> None:
+        for placeholder, target_slide in self._IMAGE_FALLBACK_TARGETS.items():
+            normalized = self._normalize_placeholder(placeholder)
+            if normalized not in pending_images:
+                continue
+            if slide_number != target_slide:
+                continue
+            picture_shape = self._find_picture_shape(slide)
+            if picture_shape is None:
+                continue
+            self._place_image(slide, picture_shape, pending_images[normalized], normalized)
+            pending_images.pop(normalized, None)
+
+    @staticmethod
+    def _find_picture_shape(slide):
+        pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        if not pictures:
+            return None
+        return max(pictures, key=lambda sh: sh.width * sh.height)
+
     @staticmethod
     def _remove_shape(slide, shape) -> None:
-        slide.shapes._spTree.remove(shape._element)
+        element = getattr(shape, "_element", None)
+        if element is None:
+            return
+        parent = element.getparent()
+        if parent is not None:
+            parent.remove(element)
 
     def _refresh_summary_charts(self) -> None:
         placeholder_key = "{estimated_versus_actual_performance_commentary}"
