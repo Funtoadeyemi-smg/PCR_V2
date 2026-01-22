@@ -6,3 +6,18 @@
 # Compiled Java class files
 *.env
 
+# Presentation decks
+*.pptx
+!powerpoint_template.pptx
+!prompts_artefacts/powerpoint_template.pptx
+Presentations and reports/
+
+# Media exports
+*.mp4
+
+# Python bytecode caches
+__pycache__/
+
+# Virtual environments
+.venv/
+venv/

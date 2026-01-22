@@ -348,7 +348,8 @@ class ConsolidatedDataExtractor:
         self.tiktok_files = list(tiktok_files or [])
         self.media_plan_file = media_plan_file
         self.prompt_template = prompt_template
-        self.template_path = template_path or "consolidated_template.pptx"
+        default_template = Path("prompts_artefacts") / "powerpoint_template.pptx"
+        self.template_path = template_path or str(default_template)
         self.manual_campaign_objective = (manual_campaign_objective or "").strip()
         self.manual_primary_kpis = (manual_primary_kpis or "").strip()
         self.manual_secondary_kpis = (manual_secondary_kpis or "").strip()
@@ -662,14 +663,15 @@ class ConsolidatedDataExtractor:
         df["Gross_Spend"] = df["Gross_Spend"].fillna(0)
         df["Net_Spend"] = df.get("Net_Spend", df["Gross_Spend"] * 0.7).fillna(df["Gross_Spend"] * 0.7)
         df["Impressions"] = df["Impressions"].fillna(0)
-        df["Reach"] = df["Reach"].fillna(df["Ad_Set_Reach"].fillna(0))
+        # Meta reach data is unreliable; blank it out so downstream metrics stay empty.
+        df["Reach"] = np.nan
         df["Clicks"] = df["Clicks"].fillna(0)
 
         if totals_row is not None:
             gross_spend = coerce_float(totals_row.get("Gross_Spend"))
             net_spend = coerce_float(totals_row.get("Net_Spend"))
             impressions = coerce_float(totals_row.get("Impressions"))
-            reach = coerce_float(totals_row.get("Reach")) or coerce_float(totals_row.get("Ad_Set_Reach"))
+            reach = math.nan
             clicks = coerce_float(totals_row.get("Clicks"))
             brand_revenue = coerce_float(totals_row.get("Brand_Revenue"))
             brand_units = coerce_float(totals_row.get("Brand_Units"))
@@ -683,7 +685,7 @@ class ConsolidatedDataExtractor:
             gross_spend = float(df["Gross_Spend"].sum())
             net_spend = float(df["Net_Spend"].sum())
             impressions = float(df["Impressions"].sum())
-            reach = float(df["Reach"].sum())
+            reach = math.nan
             clicks = float(df["Clicks"].sum())
             brand_revenue = float(df["Brand_Revenue"].fillna(0).sum())
             brand_units = float(df["Brand_Units"].fillna(0).sum())
@@ -782,9 +784,10 @@ class ConsolidatedDataExtractor:
         audience_df = audience_df[
             ~audience_df["Ad_Set_Name"].astype(str).str.lower().str.startswith("total")
         ]
+        audience_df["Reach"] = np.nan
         audience_df["CTR"] = audience_df["Clicks"].divide(audience_df["Impressions"].replace({0: np.nan})) * 100
         audience_df["Net_CPM"] = audience_df["Net_Spend"].divide(audience_df["Impressions"].replace({0: np.nan})) * 1000
-        audience_df["Frequency"] = audience_df["Impressions"].divide(audience_df["Reach"].replace({0: np.nan}))
+        audience_df["Frequency"] = np.nan
         audience_df["ROAS"] = audience_df["Brand_Revenue"].divide(audience_df["Net_Spend"].replace({0: np.nan}))
         audience_df["ROI"] = audience_df["Brand_Revenue"].divide(
             audience_df["Net_Spend"].replace({0: np.nan}) / 0.7
@@ -795,8 +798,8 @@ class ConsolidatedDataExtractor:
                 name=row["Ad_Set_Name"],
                 net_spend=float(row["Net_Spend"]),
                 impressions=float(row["Impressions"]),
-                reach=float(row["Reach"]),
-                frequency=float(row["Frequency"]) if not np.isnan(row["Frequency"]) else 0.0,
+                reach=float(row["Reach"]) if pd.notna(row["Reach"]) else math.nan,
+                frequency=float(row["Frequency"]) if pd.notna(row["Frequency"]) else math.nan,
                 clicks=float(row["Clicks"]),
                 ctr=float(row["CTR"]) if not np.isnan(row["CTR"]) else 0.0,
                 net_cpm=float(row["Net_CPM"]) if not np.isnan(row["Net_CPM"]) else 0.0,
@@ -820,9 +823,10 @@ class ConsolidatedDataExtractor:
             .reset_index()
         )
         ad_df = ad_df[~ad_df["Ad"].astype(str).str.lower().str.startswith("total")]
+        ad_df["Reach"] = np.nan
         ad_df["CTR"] = ad_df["Clicks"].divide(ad_df["Impressions"].replace({0: np.nan})) * 100
         ad_df["Net_CPM"] = ad_df["Net_Spend"].divide(ad_df["Impressions"].replace({0: np.nan})) * 1000
-        ad_df["Frequency"] = ad_df["Impressions"].divide(ad_df["Reach"].replace({0: np.nan}))
+        ad_df["Frequency"] = np.nan
         ad_df["ROAS"] = ad_df["Brand_Revenue"].divide(ad_df["Net_Spend"].replace({0: np.nan}))
 
         ads = [
@@ -830,8 +834,8 @@ class ConsolidatedDataExtractor:
                 name=row["Ad"],
                 net_spend=float(row["Net_Spend"]),
                 impressions=float(row["Impressions"]),
-                reach=float(row["Reach"]),
-                frequency=float(row["Frequency"]) if not np.isnan(row["Frequency"]) else 0.0,
+                reach=float(row["Reach"]) if pd.notna(row["Reach"]) else math.nan,
+                frequency=float(row["Frequency"]) if pd.notna(row["Frequency"]) else math.nan,
                 clicks=float(row["Clicks"]),
                 ctr=float(row["CTR"]) if not np.isnan(row["CTR"]) else 0.0,
                 net_cpm=float(row["Net_CPM"]) if not np.isnan(row["Net_CPM"]) else 0.0,
@@ -1274,6 +1278,22 @@ class ConsolidatedDataExtractor:
         pinterest: Optional[ChannelSummary],
         tiktok: Optional[ChannelSummary],
     ) -> Dict[str, float]:
+        def _sum_ignore_nan(values: Iterable[float]) -> Tuple[float, bool]:
+            total = 0.0
+            has_value = False
+            for value in values:
+                if value is None:
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isnan(numeric):
+                    continue
+                total += numeric
+                has_value = True
+            return total, has_value
+
         summaries = [meta]
         if pinterest:
             summaries.append(pinterest)
@@ -1283,12 +1303,12 @@ class ConsolidatedDataExtractor:
         total_gross = sum(s.gross_spend for s in summaries)
         total_net = sum(s.net_spend for s in summaries)
         total_impressions = sum(s.impressions for s in summaries)
-        total_reach = sum(s.reach for s in summaries)
+        total_reach, has_reach = _sum_ignore_nan(s.reach for s in summaries)
         total_clicks = sum(s.clicks for s in summaries)
 
         total_ctr = safe_div(total_clicks, total_impressions) * 100
         total_cpm = safe_div(total_net, total_impressions) * 1000
-        total_frequency = safe_div(total_impressions, total_reach)
+        total_frequency = safe_div(total_impressions, total_reach) if has_reach else math.nan
 
         brand_revenue = sum(s.brand_revenue for s in summaries)
         brand_units = sum(s.brand_units for s in summaries)
