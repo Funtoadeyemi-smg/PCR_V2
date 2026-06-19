@@ -1206,7 +1206,7 @@ class ConsolidatedDataExtractor:
 
         df = df.copy()
         original_platform = df["Platform"].copy()
-        df["Platform"] = df["Platform"].fillna(method="ffill")
+        df["Platform"] = df["Platform"].ffill()
 
         selector_cols = [
             "Format & placement",
